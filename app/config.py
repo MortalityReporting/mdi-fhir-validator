@@ -104,14 +104,19 @@ class Settings(BaseSettings):
 
     initial_load_resource_path: str = "initial_load_resource.json"
     """Path to a single FHIR resource (JSON or XML, by extension) validated
-    once at startup, after DEFAULT_IG (and its dependencies) finish loading,
-    as a warm-up/smoke test of that specific engine+IG combination -- see
-    `ValidatorEngine.validate_initial_load_resource()`. Relative paths are
-    resolved against the process's current working directory. A missing
-    file, or an empty `default_ig`, is a no-op, not an error -- this is
-    optional and never blocks startup."""
+    at startup and periodically after DEFAULT_IG (and its dependencies) finish
+    loading, as a warm-up/smoke test of that specific engine+IG combination --
+    see `ValidatorEngine.validate_initial_load_resource()`. Relative paths are
+    resolved against the process's current working directory. A missing file,
+    or an empty `default_ig`, is a no-op, not an error -- this is optional and
+    never blocks startup."""
     validate_initial_load_resource_on_startup: bool = True
     """Set to False to skip the startup warm-up validation above."""
+
+    validator_keepalive_interval_seconds: float = 300.0
+    """Run the initial-load resource validation periodically to keep the
+    terminology-server cache/session active. Values less than or equal to zero
+    disable the keepalive task."""
 
     ci_build_repos: str = ""
     """Comma-separated `<packageId>#<version>=<Org-or-User>/<Repo-Name>`

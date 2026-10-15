@@ -423,6 +423,7 @@ real `$validate` request that omits the `profile` parameter.
 | `VALIDATOR_EXTRA_ARGS` | `` (empty) | comma-separated raw CLI args appended to `server ...` |
 | `VALIDATOR_STARTUP_TIMEOUT_SECONDS` | `300` | cold start with big IGs can take minutes |
 | `VALIDATOR_REQUEST_TIMEOUT_SECONDS` | `120` | per-request httpx timeout to the engine |
+| `VALIDATOR_KEEPALIVE_INTERVAL_SECONDS` | `300` | interval in seconds for validating `INITIAL_LOAD_RESOURCE_PATH` to keep the terminology-server cache/session active; `0` or a negative value disables it |
 | `AUTO_RECOVER_VALIDATOR` | `true` | schedule an in-process restart after a transport/protocol failure; the failed request is not replayed |
 | `VALIDATOR_RECOVERY_MAX_ATTEMPTS` | `3` | maximum consecutive restart attempts for one recovery event |
 | `VALIDATOR_RECOVERY_BACKOFF_SECONDS` | `5` | delay before the second recovery attempt; subsequent delays are multiplied by `VALIDATOR_RECOVERY_BACKOFF_MULTIPLIER` |
@@ -432,7 +433,7 @@ real `$validate` request that omits the `profile` parameter.
 | `LOAD_CACHED_PACKAGES_ON_STARTUP` | `true` | load every package found in `$HOME/.fhir/packages` into the running engine at startup, see "Loading cached packages into the engine at startup" above; best-effort, set `false` for purely lazy/on-demand loading |
 | `PACKAGES` | see `app/config.py` | comma-separated `<id>#<version>` list; canonical source is `.env` (see `.env.example`), not this Python-level fallback -- returned by `GET /fhir/$packages` *and* fetched/cached/loaded into the engine at startup, see "Configuring PACKAGES and DEFAULT_IG via .env" above |
 | `DEFAULT_IG` | `` (empty) | primary `<id>#<version>` IG for this deployment; loaded (with dependencies auto-resolved) alongside `PACKAGES` at startup, see above; canonical source is also `.env` |
-| `INITIAL_LOAD_RESOURCE_PATH` | `initial_load_resource.json` | path to a sample resource validated once at startup against `DEFAULT_IG`, see "Startup warm-up validation" above; missing file is a no-op |
+| `INITIAL_LOAD_RESOURCE_PATH` | `initial_load_resource.json` | path to a sample resource validated at startup and periodically against `DEFAULT_IG`, see "Startup warm-up validation" above; missing file is a no-op |
 | `VALIDATE_INITIAL_LOAD_RESOURCE_ON_STARTUP` | `true` | set `false` to skip the startup warm-up validation above |
 | `CI_BUILD_REPOS` | `` (empty) | comma-separated `<id>#<version>=<Org-or-User>/<Repo-Name>` mapping used as tier 2 of the `PACKAGES`/`DEFAULT_IG` fallback chain, see "Configuring PACKAGES and DEFAULT_IG via .env" above; canonical source is also `.env` |
 | `CORS_ALLOW_ORIGINS` | `*` | comma-separated list of allowed CORS origins; also makes every route respond to CORS preflight `OPTIONS` requests via Starlette's `CORSMiddleware` (see `app/main.py`) |
@@ -452,6 +453,11 @@ the diagnostic inside an otherwise normal HTTP 200 `OperationOutcome`.
 The failed request is not replayed. This handles stale server-issued cache IDs
 left by a crashed, idle, or different validator process; ordinary validator
 HTTP errors and request timeouts do not clear the cache.
+
+When `DEFAULT_IG` and `INITIAL_LOAD_RESOURCE_PATH` are configured,
+`VALIDATOR_KEEPALIVE_INTERVAL_SECONDS` runs the same validation periodically
+(five minutes by default) to keep the terminology-server session active. The
+setting can be `0` or negative to disable the background validation.
 
 ## Known limitations (intentional, not bugs)
 

@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,7 @@ class ValidatorEngine:
         self._operation_condition = asyncio.Condition()
         self._active_operations = 0
         self._recovery_task: asyncio.Task[None] | None = None
+        self._keepalive_task: asyncio.Task[None] | None = None
         self._stopping = False
         self._clear_tx_cache_next_start = getattr(
             settings, "clear_terminology_cache_on_startup", False
@@ -143,6 +145,7 @@ class ValidatorEngine:
                 self._startup_state = "failed"
                 raise
             self._startup_state = "ready"
+            self._ensure_keepalive_task()
 
     async def _start(self) -> None:
         """Launch the validator subprocess and block until it is ready.
@@ -281,6 +284,7 @@ class ValidatorEngine:
         after the ASGI application has begun shutting down.
         """
         self._stopping = True
+        await self._cancel_keepalive_task()
         current = asyncio.current_task()
         recovery_task = self._recovery_task
         if recovery_task is not None and recovery_task is not current:
@@ -297,6 +301,62 @@ class ValidatorEngine:
             if not self._client.is_closed:
                 await self._client.aclose()
             self._startup_state = "not_started"
+
+    async def _cancel_keepalive_task(self) -> None:
+        task = self._keepalive_task
+        if task is None:
+            return
+        self._keepalive_task = None
+        if task is asyncio.current_task():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    def _ensure_keepalive_task(self) -> None:
+        """Start the one engine keepalive worker when its prerequisites exist."""
+        interval = getattr(self._settings, "validator_keepalive_interval_seconds", 0.0)
+        if self._stopping or not self.is_ready or interval <= 0 or not self._settings.default_ig:
+            return
+
+        path = Path(self._settings.initial_load_resource_path)
+        if not path.is_file():
+            logger.debug("Keepalive resource %s not found; skipping keepalive", path)
+            return
+
+        if self._keepalive_task is not None and not self._keepalive_task.done():
+            return
+        self._keepalive_task = asyncio.create_task(self._run_keepalive_loop())
+        logger.info(
+            "Scheduled validator keepalive every %ss using %s",
+            interval,
+            path,
+        )
+
+    async def _run_keepalive_loop(self) -> None:
+        interval = getattr(self._settings, "validator_keepalive_interval_seconds", 0.0)
+        try:
+            while not self._stopping:
+                await asyncio.sleep(interval)
+                if self._stopping or not self.is_ready:
+                    continue
+                try:
+                    await self._validate_initial_load_resource("periodic keepalive")
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # A keepalive must never kill its worker. The normal
+                    # validation path still handles stale terminology
+                    # responses and schedules the existing bounded recovery
+                    # when appropriate.
+                    logger.exception("Unexpected validator keepalive failure")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._keepalive_task is asyncio.current_task():
+                self._keepalive_task = None
 
     @asynccontextmanager
     async def _operation(self):
@@ -408,6 +468,7 @@ class ValidatorEngine:
                 self._startup_state = "failed"
                 raise
             self._startup_state = "ready"
+            self._ensure_keepalive_task()
 
     async def ensure_igs_loaded(self, igs: list[str]) -> None:
         """Load any IGs not already loaded into the running engine via
@@ -598,24 +659,39 @@ class ValidatorEngine:
         """
         if not self._settings.validate_initial_load_resource_on_startup:
             return
+        await self._validate_initial_load_resource("startup")
+
+    async def _validate_initial_load_resource(self, source: str) -> None:
         if not self._settings.default_ig:
             return
 
         path = Path(self._settings.initial_load_resource_path)
         if not path.is_file():
-            logger.debug("Initial load resource %s not found; skipping startup validation", path)
+            logger.debug("Initial load resource %s not found; skipping %s validation", path, source)
             return
 
-        content = path.read_bytes()
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            logger.warning(
+                "Could not read initial load resource %s for %s validation: %s",
+                path,
+                source,
+                exc,
+            )
+            return
+
         content_type = (
             "application/fhir+xml" if path.suffix.lower() == ".xml" else "application/fhir+json"
         )
 
         logger.info(
-            "Validating initial load resource %s against DEFAULT_IG %s",
+            "Validating initial load resource %s against DEFAULT_IG %s (%s)",
             path,
             self._settings.default_ig,
+            source,
         )
+        started = time.monotonic()
         try:
             response = await self.validate_resource(
                 content=content,
@@ -624,7 +700,7 @@ class ValidatorEngine:
                 accept="application/fhir+json",
             )
         except httpx.HTTPError as exc:
-            logger.warning("Startup validation of %s could not reach the engine: %s", path, exc)
+            logger.warning("%s validation of %s could not reach the engine: %s", source, path, exc)
             return
 
         issue_count: int | str = "?"
@@ -636,7 +712,8 @@ class ValidatorEngine:
 
         if response.status_code >= 400:
             logger.warning(
-                "Startup validation of %s returned HTTP %s (%s issue(s)): %s",
+                "%s validation of %s returned HTTP %s (%s issue(s)): %s",
+                source,
                 path,
                 response.status_code,
                 issue_count,
@@ -644,9 +721,11 @@ class ValidatorEngine:
             )
         else:
             logger.info(
-                "Startup validation of %s completed successfully (%s issue(s))",
+                "%s validation of %s completed successfully (%s issue(s), %.2fs)",
+                source,
                 path,
                 issue_count,
+                time.monotonic() - started,
             )
 
     async def validate_resource(

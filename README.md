@@ -16,6 +16,7 @@ This service provides a REST API for:
 - Support for both JSON and XML FHIR formats
 - Dynamic IG loading without restarting the engine
 - Automatic recovery from engine failures
+- Periodic terminology-cache keepalive validation
 - Configuration-driven package management
 - Docker-ready deployment
 
@@ -98,6 +99,13 @@ Returns a list of configured FHIR packages.
 Health check endpoints for the service and validator engine.
 
 **Response**: Service status and loaded IGs information
+
+### Terminology cache keepalive
+
+When `DEFAULT_IG` and `INITIAL_LOAD_RESOURCE_PATH` are configured, the service
+validates that resource every five minutes by default. This keeps the
+terminology-server cache/session active and reduces avoidable validator
+restarts. Set `VALIDATOR_KEEPALIVE_INTERVAL_SECONDS=0` to disable it.
 
 ## Response and Accept Header Behavior
 
